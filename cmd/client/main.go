@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/srujankothuri/SentinelFS/internal/client"
 )
@@ -93,6 +94,19 @@ func main() {
 			os.Exit(1)
 		}
 
+	case "watch":
+		interval := 3 * time.Second
+		if len(args) > 0 {
+			d, err := time.ParseDuration(args[0])
+			if err == nil {
+				interval = d
+			}
+		}
+		if err := c.WatchCluster(interval); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+
 	default:
 		fmt.Fprintf(os.Stderr, "Unknown command: %s\n", cmd)
 		printUsage()
@@ -113,6 +127,7 @@ Commands:
   info    <remote_path>                Show file chunk details
   cluster                              Show cluster health overview
   nodes                                Show per-node health details
+  watch   [interval]                   Live cluster monitor (default: 3s)
 
 Environment:
   SENTINEL_META_ADDR   Metadata server address (default: localhost:9000)`)
