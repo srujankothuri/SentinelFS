@@ -2,6 +2,7 @@ package health
 
 import (
 	"log/slog"
+	"sync"
 	"time"
 )
 
@@ -19,14 +20,15 @@ type HealthReport struct {
 
 // Monitor collects and aggregates health metrics from all nodes
 type Monitor struct {
-	store         *MetricStore
-	lastErrorCount map[string]int64 // track error deltas per node
+	mu             sync.Mutex
+	store          *MetricStore
+	lastErrorCount map[string]int64
 }
 
 // NewMonitor creates a new health monitor
 func NewMonitor() *Monitor {
 	return &Monitor{
-		store:         NewMetricStore(),
+		store:          NewMetricStore(),
 		lastErrorCount: make(map[string]int64),
 	}
 }
@@ -38,17 +40,18 @@ func (m *Monitor) GetStore() *MetricStore {
 
 // IngestReport processes a health report from a data node
 func (m *Monitor) IngestReport(report *HealthReport) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	nm := m.store.GetOrCreate(report.NodeID)
 	ts := report.Timestamp
 
-	// Record direct metrics
 	nm.Record(MetricDiskIOLatency, report.DiskIOLatency, ts)
 	nm.Record(MetricDiskUtil, report.DiskUtil, ts)
 	nm.Record(MetricResponseTime, report.ResponseTime, ts)
 	nm.Record(MetricCPUUsage, report.CPUUsage, ts)
 	nm.Record(MetricMemoryUsage, report.MemoryUsage, ts)
 
-	// Compute error rate (errors per interval since last report)
 	lastCount, ok := m.lastErrorCount[report.NodeID]
 	if ok {
 		delta := report.ErrorCount - lastCount
