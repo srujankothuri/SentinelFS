@@ -2,9 +2,12 @@ package main
 
 import (
 	"flag"
-	"fmt"
 	"log/slog"
 	"os"
+	"os/signal"
+	"syscall"
+
+	"github.com/srujankothuri/SentinelFS/internal/metaserver"
 )
 
 func main() {
@@ -14,8 +17,19 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	slog.Info("starting SentinelFS metadata server", "port", *port)
-	fmt.Printf("SentinelFS Metadata Server listening on :%d\n", *port)
+	srv := metaserver.NewServer(*port)
 
-	// TODO: Initialize and start gRPC server
+	// Graceful shutdown
+	go func() {
+		sigCh := make(chan os.Signal, 1)
+		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+		<-sigCh
+		slog.Info("shutting down metadata server")
+		srv.Stop()
+	}()
+
+	if err := srv.Start(); err != nil {
+		slog.Error("metadata server failed", "error", err)
+		os.Exit(1)
+	}
 }
