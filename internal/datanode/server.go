@@ -21,27 +21,29 @@ type Server struct {
 	health     *HealthCollector
 	grpcServer *grpc.Server
 
-	nodeID   string
-	address  string
-	port     int
-	metaAddr string
-	capacity int64
+	nodeID    string
+	address   string
+	port      int
+	adminPort int
+	metaAddr  string
+	capacity  int64
 }
 
 // NewServer creates a new data node server
-func NewServer(port int, metaAddr, dataDir string, capacity int64) (*Server, error) {
+func NewServer(port int, adminPort int, metaAddr, dataDir string, capacity int64) (*Server, error) {
 	store, err := NewChunkStore(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("create chunk store: %w", err)
 	}
 
 	return &Server{
-		store:    store,
-		health:   NewHealthCollector(),
-		port:     port,
-		metaAddr: metaAddr,
-		address:  fmt.Sprintf("localhost:%d", port),
-		capacity: capacity,
+		store:     store,
+		health:    NewHealthCollector(),
+		port:      port,
+		adminPort: adminPort,
+		metaAddr:  metaAddr,
+		address:   fmt.Sprintf("localhost:%d", port),
+		capacity:  capacity,
 	}, nil
 }
 
@@ -65,9 +67,18 @@ func (s *Server) Start() error {
 	go s.heartbeatLoop()
 	go s.healthReportLoop()
 
+	// Start admin HTTP server for chaos testing
+	admin := NewAdminServer(s.health, s.adminPort, s.nodeID)
+	go func() {
+		if err := admin.Start(); err != nil {
+			slog.Error("admin server failed", "error", err)
+		}
+	}()
+
 	slog.Info("data node started",
 		"node_id", s.nodeID,
 		"port", s.port,
+		"admin_port", s.adminPort,
 		"meta_addr", s.metaAddr,
 	)
 

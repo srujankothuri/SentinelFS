@@ -46,15 +46,15 @@ go run ./cmd/metaserver --port 9100 &
 PIDS+=($!)
 sleep 2
 
-go run ./cmd/datanode --meta-addr localhost:9100 --port 9101 --data-dir ./data/test-node-1 &
+go run ./cmd/datanode --meta-addr localhost:9100 --port 9101 --admin-port 9601 --data-dir ./data/test-node-1 &
 PIDS+=($!)
 sleep 1
 
-go run ./cmd/datanode --meta-addr localhost:9100 --port 9102 --data-dir ./data/test-node-2 &
+go run ./cmd/datanode --meta-addr localhost:9100 --port 9102 --admin-port 9602 --data-dir ./data/test-node-2 &
 PIDS+=($!)
 sleep 1
 
-go run ./cmd/datanode --meta-addr localhost:9100 --port 9103 --data-dir ./data/test-node-3 &
+go run ./cmd/datanode --meta-addr localhost:9100 --port 9103 --admin-port 9603 --data-dir ./data/test-node-3 &
 PIDS+=($!)
 sleep 2
 

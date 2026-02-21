@@ -11,7 +11,8 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 9001, "data node port")
+	port := flag.Int("port", 9001, "data node gRPC port")
+	adminPort := flag.Int("admin-port", 9501, "admin HTTP port for chaos testing")
 	metaAddr := flag.String("meta-addr", "localhost:9000", "metadata server address")
 	dataDir := flag.String("data-dir", "./data/node1", "directory for chunk storage")
 	capacity := flag.Int64("capacity", 10*1024*1024*1024, "storage capacity in bytes") // 10GB default
@@ -20,7 +21,7 @@ func main() {
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	srv, err := datanode.NewServer(*port, *metaAddr, *dataDir, *capacity)
+	srv, err := datanode.NewServer(*port, *adminPort, *metaAddr, *dataDir, *capacity)
 	if err != nil {
 		slog.Error("failed to create data node", "error", err)
 		os.Exit(1)
