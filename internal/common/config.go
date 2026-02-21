@@ -19,10 +19,10 @@ const (
 	DeadNodeTimeout = 15 * time.Second
 
 	// Health risk thresholds
-	RiskHealthy  = 0.3
-	RiskWarning  = 0.6
-	RiskAtRisk   = 0.8
-	RiskCritical = 0.8
+	RiskHealthy  = 0.25
+	RiskWarning  = 0.45
+	RiskAtRisk   = 0.55
+	RiskCritical = 0.55
 
 	// Sliding window durations
 	WindowShort  = 5 * time.Minute

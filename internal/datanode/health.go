@@ -56,11 +56,12 @@ func (hc *HealthCollector) Collect() Metrics {
 		elapsed := time.Since(hc.degradeStarted).Seconds()
 		factor := elapsed * hc.degradeSpeed
 
-		hc.diskIOLatency += factor * 0.5
-		hc.diskUtil += factor * 0.002
-		hc.responseTime += factor * 0.3
-		hc.cpuUsage += factor * 0.003
-		hc.errorCount += int64(factor * 0.5)
+		hc.diskIOLatency += factor * 0.8
+		hc.diskUtil += factor * 0.005
+		hc.responseTime += factor * 0.5
+		hc.cpuUsage += factor * 0.005
+		hc.memoryUsage += factor * 0.003
+		hc.errorCount += int64(factor * 1.0)
 
 		// Clamp to valid ranges
 		if hc.diskUtil > 0.99 {
@@ -68,6 +69,9 @@ func (hc *HealthCollector) Collect() Metrics {
 		}
 		if hc.cpuUsage > 0.99 {
 			hc.cpuUsage = 0.99
+		}
+		if hc.memoryUsage > 0.99 {
+			hc.memoryUsage = 0.99
 		}
 	}
 

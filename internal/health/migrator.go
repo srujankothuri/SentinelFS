@@ -112,8 +112,11 @@ func (m *Migrator) MigrateNode(prediction *PredictionResult) *MigrationReport {
 	report.TotalChunks = len(chunkIDs)
 
 	if len(chunkIDs) == 0 {
-		slog.Info("no chunks to migrate", "node_id", prediction.NodeID)
+		slog.Info("no chunks on node, skipping migration", "node_id", prediction.NodeID)
 		report.CompletedAt = time.Now()
+		m.mu.Lock()
+		m.history = append(m.history, report)
+		m.mu.Unlock()
 		return report
 	}
 

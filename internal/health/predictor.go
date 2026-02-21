@@ -183,7 +183,12 @@ func (p *Predictor) analyzeMetric(nm *NodeMetrics, metricType MetricType, thresh
 	}
 
 	// ── Combine components ──
-	risk.RiskScore = clampRisk(0.4*valueRisk + 0.4*trendRisk + 0.2*volRisk)
+	// When current value is already dangerous, boost overall risk
+	combined := 0.4*valueRisk + 0.4*trendRisk + 0.2*volRisk
+	if valueRisk > 0.7 {
+		combined = 0.6*valueRisk + 0.25*trendRisk + 0.15*volRisk
+	}
+	risk.RiskScore = clampRisk(combined)
 
 	return risk
 }

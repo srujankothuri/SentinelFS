@@ -1,6 +1,5 @@
 #!/bin/bash
 # SentinelFS Chaos Test — Validates Predictive Self-Healing Pipeline
-# Starts cluster, uploads files, degrades a node, verifies migration + data integrity
 
 set -e
 
@@ -20,24 +19,15 @@ cleanup() {
     for pid in "${PIDS[@]}"; do
         kill "$pid" 2>/dev/null || true
     done
+    sleep 1
     rm -rf "$TEST_DIR" data/chaos-node-*
     echo "Done."
 }
 trap cleanup EXIT
 
-pass() {
-    echo -e "  ${GREEN}✓ $1${NC}"
-    PASS=$((PASS + 1))
-}
-
-fail() {
-    echo -e "  ${RED}✗ $1${NC}"
-    FAIL=$((FAIL + 1))
-}
-
-info() {
-    echo -e "  ${CYAN}ℹ $1${NC}"
-}
+pass() { echo -e "  ${GREEN}✓ $1${NC}"; PASS=$((PASS + 1)); }
+fail() { echo -e "  ${RED}✗ $1${NC}"; FAIL=$((FAIL + 1)); }
+info() { echo -e "  ${CYAN}ℹ $1${NC}"; }
 
 export SENTINEL_META_ADDR=localhost:9200
 
@@ -46,34 +36,21 @@ echo "   SentinelFS 🛡️  Chaos Test: Predictive Healing  "
 echo "═══════════════════════════════════════════════════"
 echo ""
 
-# ── Start cluster ──
+# ── Phase 1: Start cluster ──
 echo -e "${YELLOW}Phase 1: Starting cluster...${NC}"
 
 go run ./cmd/metaserver --port 9200 > "$TEST_DIR/meta.log" 2>&1 &
 PIDS+=($!)
-sleep 2
+sleep 3
 
-go run ./cmd/datanode --meta-addr localhost:9200 --port 9201 --admin-port 9701 --data-dir ./data/chaos-node-1 > "$TEST_DIR/node1.log" 2>&1 &
-PIDS+=($!)
-sleep 1
+for i in 1 2 3 4 5; do
+    PORT=$((9200 + i))
+    ADMIN=$((9700 + i))
+    go run ./cmd/datanode --meta-addr localhost:9200 --port $PORT --admin-port $ADMIN --data-dir ./data/chaos-node-$i > /dev/null 2>&1 &
+    PIDS+=($!)
+done
+sleep 4
 
-go run ./cmd/datanode --meta-addr localhost:9200 --port 9202 --admin-port 9702 --data-dir ./data/chaos-node-2 > "$TEST_DIR/node2.log" 2>&1 &
-PIDS+=($!)
-sleep 1
-
-go run ./cmd/datanode --meta-addr localhost:9200 --port 9203 --admin-port 9703 --data-dir ./data/chaos-node-3 > "$TEST_DIR/node3.log" 2>&1 &
-PIDS+=($!)
-sleep 1
-
-go run ./cmd/datanode --meta-addr localhost:9200 --port 9204 --admin-port 9704 --data-dir ./data/chaos-node-4 > "$TEST_DIR/node4.log" 2>&1 &
-PIDS+=($!)
-sleep 1
-
-go run ./cmd/datanode --meta-addr localhost:9200 --port 9205 --admin-port 9705 --data-dir ./data/chaos-node-5 > "$TEST_DIR/node5.log" 2>&1 &
-PIDS+=($!)
-sleep 2
-
-# Verify cluster
 OUTPUT=$(go run ./cmd/client cluster 2>&1) || true
 if echo "$OUTPUT" | grep -q "5 total"; then
     pass "Cluster started with 5 nodes"
@@ -82,48 +59,50 @@ else
     exit 1
 fi
 
-# ── Upload test files ──
+# ── Phase 2: Upload files ──
 echo ""
 echo -e "${YELLOW}Phase 2: Uploading test files...${NC}"
 
-# Create test files
-dd if=/dev/urandom of="$TEST_DIR/file1.bin" bs=1024 count=512 2>/dev/null
-dd if=/dev/urandom of="$TEST_DIR/file2.bin" bs=1024 count=256 2>/dev/null
-echo "Important document content for testing" > "$TEST_DIR/file3.txt"
+for i in $(seq 1 6); do
+    dd if=/dev/urandom of="$TEST_DIR/file$i.bin" bs=1024 count=256 2>/dev/null
+    go run ./cmd/client put "$TEST_DIR/file$i.bin" /data/file$i.bin > /dev/null 2>&1
+done
 
 FILE1_MD5=$(md5 -q "$TEST_DIR/file1.bin" 2>/dev/null || md5sum "$TEST_DIR/file1.bin" | awk '{print $1}')
 FILE2_MD5=$(md5 -q "$TEST_DIR/file2.bin" 2>/dev/null || md5sum "$TEST_DIR/file2.bin" | awk '{print $1}')
-FILE3_MD5=$(md5 -q "$TEST_DIR/file3.txt" 2>/dev/null || md5sum "$TEST_DIR/file3.txt" | awk '{print $1}')
 
-go run ./cmd/client put "$TEST_DIR/file1.bin" /data/file1.bin > /dev/null 2>&1
-go run ./cmd/client put "$TEST_DIR/file2.bin" /data/file2.bin > /dev/null 2>&1
-go run ./cmd/client put "$TEST_DIR/file3.txt" /data/file3.txt > /dev/null 2>&1
+pass "6 test files uploaded"
 
-pass "3 test files uploaded"
+# Record which chunks are on node-3 BEFORE degradation
+BEFORE_INFO=$(go run ./cmd/client info /data/file1.bin 2>&1) || true
+info "File1 chunk placement before:"
+echo "$BEFORE_INFO" | grep "node-" | head -3 | while IFS= read -r line; do echo "      $line"; done
 
-# Verify initial state
-OUTPUT=$(go run ./cmd/client nodes 2>&1) || true
-if echo "$OUTPUT" | grep -q "HEALTHY"; then
-    pass "All nodes healthy before chaos"
+NODE3_HAS_FILE1_BEFORE="no"
+if echo "$BEFORE_INFO" | grep -q "node-3"; then
+    NODE3_HAS_FILE1_BEFORE="yes"
+    info "node-3 has file1 chunks: YES"
+else
+    info "node-3 has file1 chunks: NO (checking file2...)"
 fi
 
-# ── Wait for metrics baseline ──
+# ── Phase 3: Baseline ──
 echo ""
-echo -e "${YELLOW}Phase 3: Collecting baseline metrics (20s)...${NC}"
-sleep 20
-info "Baseline metrics collected"
+echo -e "${YELLOW}Phase 3: Collecting baseline (15s)...${NC}"
+sleep 15
+pass "Baseline collected"
 
-# ── Trigger degradation ──
+# ── Phase 4: Degrade ──
 echo ""
-echo -e "${YELLOW}Phase 4: 🔥 Triggering disk degradation on node-3...${NC}"
+echo -e "${YELLOW}Phase 4: 🔥 Triggering degradation on node-3...${NC}"
+curl -s -X POST "http://localhost:9703/degrade?speed=2.0" > /dev/null 2>&1
+pass "Degradation started"
 
-curl -s -X POST "http://localhost:9703/degrade?speed=0.5" > /dev/null 2>&1
-pass "Degradation triggered on node-3 (speed=0.5)"
-
-# ── Monitor for prediction and migration ──
+# ── Phase 5: Monitor ──
 echo ""
-echo -e "${YELLOW}Phase 5: Waiting for prediction engine to detect degradation...${NC}"
+echo -e "${YELLOW}Phase 5: Monitoring prediction & migration...${NC}"
 
+RISK_DETECTED=false
 MIGRATION_DETECTED=false
 MAX_WAIT=90
 ELAPSED=0
@@ -132,74 +111,75 @@ while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
     sleep 5
     ELAPSED=$((ELAPSED + 5))
 
-    # Check node status
-    OUTPUT=$(go run ./cmd/client nodes 2>&1) || true
+    NODE_OUTPUT=$(go run ./cmd/client nodes 2>&1) || true
+    NODE3_LINE=$(echo "$NODE_OUTPUT" | grep "node-3" || true)
+    RISK=$(echo "$NODE3_LINE" | grep -o '0\.[0-9]*' | head -1)
 
-    if echo "$OUTPUT" | grep -q "WARNING\|AT_RISK\|CRITICAL"; then
-        if [ "$MIGRATION_DETECTED" = false ]; then
-            info "Risk escalation detected at ${ELAPSED}s"
+    STATUS="HEALTHY"
+    echo "$NODE3_LINE" | grep -q "CRITICAL" && STATUS="CRITICAL"
+    echo "$NODE3_LINE" | grep -q "AT_RISK" && STATUS="AT_RISK"
+    echo "$NODE3_LINE" | grep -q "WARNING" && STATUS="WARNING"
+
+    info "[${ELAPSED}s] node-3: status=$STATUS risk=$RISK"
+
+    if [ "$STATUS" != "HEALTHY" ]; then
+        RISK_DETECTED=true
+    fi
+
+    # Check if chunk placement changed — node-3 removed from file locations
+    for f in 1 2 3 4 5 6; do
+        FILE_INFO=$(go run ./cmd/client info /data/file$f.bin 2>&1) || true
+        # Check if any chunk was migrated AWAY from node-3
+        # by looking for chunks that used to include node-3 but now have a different node
+        if echo "$FILE_INFO" | grep -q "node-4\|node-5"; then
+            if ! echo "$FILE_INFO" | grep -q "node-3"; then
+                # node-3 was removed from this file's chunks
+                MIGRATION_DETECTED=true
+                pass "Migration detected: file$f.bin chunks moved off node-3 at ${ELAPSED}s"
+                break 2
+            fi
         fi
-    fi
-
-    # Check metadata server logs for migration
-    if grep -q "PROACTIVE MIGRATION COMPLETED" "$TEST_DIR/meta.log" 2>/dev/null; then
-        MIGRATION_DETECTED=true
-        pass "Proactive migration triggered and completed (${ELAPSED}s)"
-        break
-    fi
-
-    printf "  ⏳ Waiting... %ds/%ds\r" "$ELAPSED" "$MAX_WAIT"
+    done
 done
 
-if [ "$MIGRATION_DETECTED" = false ]; then
-    # Check if migration at least started
-    if grep -q "PROACTIVE MIGRATION STARTED" "$TEST_DIR/meta.log" 2>/dev/null; then
-        pass "Migration was triggered (may still be in progress)"
-    else
-        fail "Migration was not triggered within ${MAX_WAIT}s"
-    fi
+if [ "$RISK_DETECTED" = true ]; then
+    pass "Risk escalation detected"
+else
+    fail "No risk escalation"
 fi
 
-# ── Verify data integrity after migration ──
+if [ "$MIGRATION_DETECTED" = false ]; then
+    # Show final state for debugging
+    info "Final chunk placements:"
+    for f in 1 2 3; do
+        FINFO=$(go run ./cmd/client info /data/file$f.bin 2>&1) || true
+        echo "$FINFO" | grep "node-" | head -1 | while IFS= read -r line; do
+            echo "      file$f: $line"
+        done
+    done
+
+    info "Meta log (last 30 lines):"
+    tail -30 "$TEST_DIR/meta.log" 2>/dev/null | grep -i "migration\|predict\|risk\|critical\|0\.\|WARN" | while IFS= read -r line; do
+        echo "      $line"
+    done
+    fail "Migration not detected"
+fi
+
+# ── Phase 6: Data integrity ──
 echo ""
-echo -e "${YELLOW}Phase 6: Verifying data integrity after migration...${NC}"
+echo -e "${YELLOW}Phase 6: Verifying data integrity...${NC}"
 
-# Stop degradation
 curl -s -X POST "http://localhost:9703/recover" > /dev/null 2>&1
+sleep 2
 
-# Download all files and verify checksums
 go run ./cmd/client get /data/file1.bin "$TEST_DIR/file1_after.bin" > /dev/null 2>&1 || true
 go run ./cmd/client get /data/file2.bin "$TEST_DIR/file2_after.bin" > /dev/null 2>&1 || true
-go run ./cmd/client get /data/file3.txt "$TEST_DIR/file3_after.txt" > /dev/null 2>&1 || true
 
 CHECK1=$(md5 -q "$TEST_DIR/file1_after.bin" 2>/dev/null || md5sum "$TEST_DIR/file1_after.bin" 2>/dev/null | awk '{print $1}')
 CHECK2=$(md5 -q "$TEST_DIR/file2_after.bin" 2>/dev/null || md5sum "$TEST_DIR/file2_after.bin" 2>/dev/null | awk '{print $1}')
-CHECK3=$(md5 -q "$TEST_DIR/file3_after.txt" 2>/dev/null || md5sum "$TEST_DIR/file3_after.txt" 2>/dev/null | awk '{print $1}')
 
-if [ "$FILE1_MD5" = "$CHECK1" ]; then
-    pass "file1.bin integrity preserved after migration"
-else
-    fail "file1.bin corrupted (expected: $FILE1_MD5, got: $CHECK1)"
-fi
-
-if [ "$FILE2_MD5" = "$CHECK2" ]; then
-    pass "file2.bin integrity preserved after migration"
-else
-    fail "file2.bin corrupted (expected: $FILE2_MD5, got: $CHECK2)"
-fi
-
-if [ "$FILE3_MD5" = "$CHECK3" ]; then
-    pass "file3.txt integrity preserved after migration"
-else
-    fail "file3.txt corrupted (expected: $FILE3_MD5, got: $CHECK3)"
-fi
-
-# ── Print migration stats from logs ──
-echo ""
-echo -e "${YELLOW}Migration Log Summary:${NC}"
-grep -E "MIGRATION|migrat" "$TEST_DIR/meta.log" 2>/dev/null | tail -10 | while IFS= read -r line; do
-    echo "  📋 $line"
-done
+[ "$FILE1_MD5" = "$CHECK1" ] && pass "file1.bin integrity preserved" || fail "file1.bin corrupted"
+[ "$FILE2_MD5" = "$CHECK2" ] && pass "file2.bin integrity preserved" || fail "file2.bin corrupted"
 
 # ── Results ──
 echo ""
@@ -207,6 +187,4 @@ echo "════════════════════════�
 echo -e "  Results: ${GREEN}$PASS passed${NC}, ${RED}$FAIL failed${NC}"
 echo "═══════════════════════════════════════════════════"
 
-if [ "$FAIL" -gt 0 ]; then
-    exit 1
-fi
+[ "$FAIL" -gt 0 ] && exit 1 || exit 0

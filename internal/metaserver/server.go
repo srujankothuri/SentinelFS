@@ -398,9 +398,9 @@ func (s *Server) deadNodeChecker() {
 // predictionLoop periodically runs the prediction engine and triggers migrations
 func (s *Server) predictionLoop() {
 	// Wait for nodes to register and accumulate metrics
-	time.Sleep(15 * time.Second)
+	time.Sleep(10 * time.Second)
 
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(3 * time.Second)
 	defer ticker.Stop()
 
 	for range ticker.C {
