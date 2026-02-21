@@ -1,17 +1,17 @@
-package health
+package metaserver
 
 import (
 	"github.com/srujankothuri/SentinelFS/internal/common"
-	"github.com/srujankothuri/SentinelFS/internal/metaserver"
+	"github.com/srujankothuri/SentinelFS/internal/health"
 )
 
-// ChunkManagerAdapter wraps the metaserver ChunkManager to implement ChunkLocator
+// ChunkManagerAdapter wraps ChunkManager to implement health.ChunkLocator
 type ChunkManagerAdapter struct {
-	cm *metaserver.ChunkManager
+	cm *ChunkManager
 }
 
 // NewChunkManagerAdapter creates a new adapter
-func NewChunkManagerAdapter(cm *metaserver.ChunkManager) *ChunkManagerAdapter {
+func NewChunkManagerAdapter(cm *ChunkManager) *ChunkManagerAdapter {
 	return &ChunkManagerAdapter{cm: cm}
 }
 
@@ -27,21 +27,21 @@ func (a *ChunkManagerAdapter) GetChunkMeta(chunkID string) ([]string, bool) {
 	return meta.NodeIDs, true
 }
 
-func (a *ChunkManagerAdapter) GetHealthyNodeAddresses(excludeNodeIDs []string) []NodeTarget {
+func (a *ChunkManagerAdapter) GetHealthyNodeAddresses(excludeNodeIDs []string) []health.NodeTarget {
 	excludeSet := make(map[string]bool)
 	for _, id := range excludeNodeIDs {
 		excludeSet[id] = true
 	}
 
 	allNodes := a.cm.GetAllNodes()
-	targets := make([]NodeTarget, 0)
+	targets := make([]health.NodeTarget, 0)
 
 	for _, n := range allNodes {
 		if excludeSet[n.NodeID] {
 			continue
 		}
 		if n.Status == common.StatusHealthy || n.Status == common.StatusWarning {
-			targets = append(targets, NodeTarget{
+			targets = append(targets, health.NodeTarget{
 				NodeID:  n.NodeID,
 				Address: n.Address,
 			})

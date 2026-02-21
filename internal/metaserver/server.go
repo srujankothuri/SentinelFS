@@ -33,7 +33,7 @@ func NewServer(port int) *Server {
 	cm := NewChunkManager()
 	mon := health.NewMonitor()
 	pred := health.NewPredictor(mon)
-	adapter := health.NewChunkManagerAdapter(cm)
+	adapter := NewChunkManagerAdapter(cm)
 	mig := health.NewMigrator(adapter)
 
 	return &Server{
