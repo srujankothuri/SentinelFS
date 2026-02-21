@@ -10,6 +10,6 @@ FROM alpine:3.19
 RUN apk --no-cache add ca-certificates netcat-openbsd
 COPY --from=builder /bin/metaserver /usr/local/bin/metaserver
 
-EXPOSE 9000
+EXPOSE 9000 9600
 ENTRYPOINT ["metaserver"]
-CMD ["--port", "9000"]
+CMD ["--port", "9000", "--admin-port", "9600"]

@@ -6,8 +6,10 @@ services:
       context: .
       dockerfile: Dockerfile.metaserver
     container_name: sentinel-meta
+    command: ["--port", "9000", "--admin-port", "9600"]
     ports:
       - "9000:9000"
+      - "9600:9600"
     networks:
       - sentinel-net
     healthcheck:

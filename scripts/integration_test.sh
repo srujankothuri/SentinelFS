@@ -42,7 +42,7 @@ echo ""
 # ── Start cluster ──
 echo -e "${YELLOW}Starting cluster...${NC}"
 
-go run ./cmd/metaserver --port 9100 &
+go run ./cmd/metaserver --port 9100 --admin-port 9610 &
 PIDS+=($!)
 sleep 2
 

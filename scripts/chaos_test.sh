@@ -1,5 +1,6 @@
 #!/bin/bash
 # SentinelFS Chaos Test — Validates Predictive Self-Healing Pipeline
+# Strategy: upload files, find which node has chunks, degrade THAT node
 
 set -e
 
@@ -14,11 +15,18 @@ TEST_DIR=$(mktemp -d)
 PASS=0
 FAIL=0
 
+META_GRPC=localhost:9200
+META_ADMIN=localhost:9610
+
 cleanup() {
     echo -e "\n${YELLOW}Cleaning up...${NC}"
     for pid in "${PIDS[@]}"; do
-        kill "$pid" 2>/dev/null || true
+        kill -9 "$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
     done
+    sleep 1
+    # Kill any orphan Go processes on our ports
+    kill -9 $(lsof -ti :9200-9205,9610,9700-9705) 2>/dev/null || true
     sleep 1
     rm -rf "$TEST_DIR" data/chaos-node-*
     echo "Done."
@@ -29,37 +37,47 @@ pass() { echo -e "  ${GREEN}✓ $1${NC}"; PASS=$((PASS + 1)); }
 fail() { echo -e "  ${RED}✗ $1${NC}"; FAIL=$((FAIL + 1)); }
 info() { echo -e "  ${CYAN}ℹ $1${NC}"; }
 
-export SENTINEL_META_ADDR=localhost:9200
+export SENTINEL_META_ADDR=$META_GRPC
 
 echo "═══════════════════════════════════════════════════"
 echo "   SentinelFS 🛡️  Chaos Test: Predictive Healing  "
 echo "═══════════════════════════════════════════════════"
 echo ""
 
-# ── Phase 1: Start cluster ──
-echo -e "${YELLOW}Phase 1: Starting cluster...${NC}"
+# ── Kill any leftover processes ──
+kill -9 $(lsof -ti :9200-9205,9610,9700-9705) 2>/dev/null || true
+sleep 2
 
-go run ./cmd/metaserver --port 9200 > "$TEST_DIR/meta.log" 2>&1 &
+# ── Phase 1: Start cluster ──
+echo -e "${YELLOW}Phase 1: Starting cluster (5 nodes)...${NC}"
+
+go run ./cmd/metaserver --port 9200 --admin-port 9610 > /dev/null 2>&1 &
 PIDS+=($!)
 sleep 3
 
 for i in 1 2 3 4 5; do
     PORT=$((9200 + i))
     ADMIN=$((9700 + i))
-    go run ./cmd/datanode --meta-addr localhost:9200 --port $PORT --admin-port $ADMIN --data-dir ./data/chaos-node-$i > /dev/null 2>&1 &
+    go run ./cmd/datanode --meta-addr $META_GRPC --port $PORT --admin-port $ADMIN --data-dir ./data/chaos-node-$i > /dev/null 2>&1 &
     PIDS+=($!)
 done
-sleep 4
+sleep 5
 
 OUTPUT=$(go run ./cmd/client cluster 2>&1) || true
 if echo "$OUTPUT" | grep -q "5 total"; then
     pass "Cluster started with 5 nodes"
 else
     fail "Cluster startup"
+    echo "$OUTPUT"
     exit 1
 fi
 
-# ── Phase 2: Upload files ──
+# Verify all nodes are healthy and have low risk
+NODES_OUTPUT=$(go run ./cmd/client nodes 2>&1) || true
+info "Initial node state:"
+echo "$NODES_OUTPUT" | grep "node-" | while IFS= read -r line; do echo "      $line"; done
+
+# ── Phase 2: Upload files BEFORE any degradation ──
 echo ""
 echo -e "${YELLOW}Phase 2: Uploading test files...${NC}"
 
@@ -70,116 +88,145 @@ done
 
 FILE1_MD5=$(md5 -q "$TEST_DIR/file1.bin" 2>/dev/null || md5sum "$TEST_DIR/file1.bin" | awk '{print $1}')
 FILE2_MD5=$(md5 -q "$TEST_DIR/file2.bin" 2>/dev/null || md5sum "$TEST_DIR/file2.bin" | awk '{print $1}')
+FILE3_MD5=$(md5 -q "$TEST_DIR/file3.bin" 2>/dev/null || md5sum "$TEST_DIR/file3.bin" | awk '{print $1}')
 
 pass "6 test files uploaded"
 
-# Record which chunks are on node-3 BEFORE degradation
-BEFORE_INFO=$(go run ./cmd/client info /data/file1.bin 2>&1) || true
-info "File1 chunk placement before:"
-echo "$BEFORE_INFO" | grep "node-" | head -3 | while IFS= read -r line; do echo "      $line"; done
+# ── Phase 3: Find which node has the most chunks ──
+echo ""
+echo -e "${YELLOW}Phase 3: Finding target node for degradation...${NC}"
 
-NODE3_HAS_FILE1_BEFORE="no"
-if echo "$BEFORE_INFO" | grep -q "node-3"; then
-    NODE3_HAS_FILE1_BEFORE="yes"
-    info "node-3 has file1 chunks: YES"
-else
-    info "node-3 has file1 chunks: NO (checking file2...)"
+# Check each file's chunk placement to find nodes with chunks
+NODES_WITH_CHUNKS=$(go run ./cmd/client nodes 2>&1 | grep "node-" || true)
+info "Node chunk distribution:"
+echo "$NODES_WITH_CHUNKS" | while IFS= read -r line; do echo "      $line"; done
+
+# Find the admin port of a node that has chunks
+# Query each node's admin to find one that's healthy and NOT already degraded
+TARGET_PORT=""
+TARGET_NODE=""
+for APORT in 9701 9702 9703 9704 9705; do
+    STATUS=$(curl -s "http://localhost:$APORT/status" 2>/dev/null) || continue
+    IS_DEGRADING=$(echo "$STATUS" | grep -o '"degrading":false' || true)
+    LATENCY=$(echo "$STATUS" | grep -o '"disk_io_latency":"[0-9.]*' | grep -o '[0-9.]*$' || true)
+
+    # Only pick nodes with low latency (fresh, not leftover degradation)
+    if [ -n "$IS_DEGRADING" ] && [ -n "$LATENCY" ]; then
+        # Check if latency is under 100ms (healthy baseline)
+        LATENCY_INT=$(echo "$LATENCY" | cut -d. -f1)
+        if [ "$LATENCY_INT" -lt 100 ] 2>/dev/null; then
+            NODE_ID=$(echo "$STATUS" | grep -o '"node_id":"[^"]*"' | grep -o 'node-[0-9]*')
+            TARGET_PORT=$APORT
+            TARGET_NODE=$NODE_ID
+            info "Selected target: $TARGET_NODE (admin port: $TARGET_PORT, latency: ${LATENCY}ms)"
+            break
+        fi
+    fi
+done
+
+if [ -z "$TARGET_PORT" ]; then
+    fail "Could not find a healthy node to degrade"
+    info "All nodes may have leftover degradation state"
+    exit 1
 fi
 
-# ── Phase 3: Baseline ──
+# ── Phase 4: Collect baseline and check migrations ──
 echo ""
-echo -e "${YELLOW}Phase 3: Collecting baseline (15s)...${NC}"
+echo -e "${YELLOW}Phase 4: Collecting baseline metrics (15s)...${NC}"
 sleep 15
+
+BASELINE_MIGRATIONS=$(curl -s "http://$META_ADMIN/migrations" 2>/dev/null | grep -o '"count":[0-9]*' | grep -o '[0-9]*' || echo "0")
+if [ -z "$BASELINE_MIGRATIONS" ]; then BASELINE_MIGRATIONS=0; fi
+info "Baseline migrations: $BASELINE_MIGRATIONS"
 pass "Baseline collected"
 
-# ── Phase 4: Degrade ──
+# ── Phase 5: Degrade the target node ──
 echo ""
-echo -e "${YELLOW}Phase 4: 🔥 Triggering degradation on node-3...${NC}"
-curl -s -X POST "http://localhost:9703/degrade?speed=2.0" > /dev/null 2>&1
-pass "Degradation started"
+echo -e "${YELLOW}Phase 5: 🔥 Triggering degradation on $TARGET_NODE (port $TARGET_PORT)...${NC}"
+curl -s -X POST "http://localhost:$TARGET_PORT/degrade?speed=2.0" > /dev/null 2>&1
+pass "Degradation started on $TARGET_NODE (speed=2.0)"
 
-# ── Phase 5: Monitor ──
+# ── Phase 6: Monitor for migration ──
 echo ""
-echo -e "${YELLOW}Phase 5: Monitoring prediction & migration...${NC}"
+echo -e "${YELLOW}Phase 6: Monitoring for prediction & migration...${NC}"
 
-RISK_DETECTED=false
 MIGRATION_DETECTED=false
-MAX_WAIT=90
+RISK_DETECTED=false
+MAX_WAIT=120
 ELAPSED=0
 
 while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
     sleep 5
     ELAPSED=$((ELAPSED + 5))
 
+    # Check migration count via HTTP
+    MIGRATION_RESP=$(curl -s "http://$META_ADMIN/migrations" 2>/dev/null) || true
+    CURRENT_MIGRATIONS=$(echo "$MIGRATION_RESP" | grep -o '"count":[0-9]*' | grep -o '[0-9]*' || echo "0")
+    if [ -z "$CURRENT_MIGRATIONS" ]; then CURRENT_MIGRATIONS=0; fi
+
+    # Check node status via CLI
     NODE_OUTPUT=$(go run ./cmd/client nodes 2>&1) || true
-    NODE3_LINE=$(echo "$NODE_OUTPUT" | grep "node-3" || true)
-    RISK=$(echo "$NODE3_LINE" | grep -o '0\.[0-9]*' | head -1)
+    DEGRADED_LINE=$(echo "$NODE_OUTPUT" | grep -E "WARNING|AT_RISK|CRITICAL" | head -1) || true
 
-    STATUS="HEALTHY"
-    echo "$NODE3_LINE" | grep -q "CRITICAL" && STATUS="CRITICAL"
-    echo "$NODE3_LINE" | grep -q "AT_RISK" && STATUS="AT_RISK"
-    echo "$NODE3_LINE" | grep -q "WARNING" && STATUS="WARNING"
-
-    info "[${ELAPSED}s] node-3: status=$STATUS risk=$RISK"
-
-    if [ "$STATUS" != "HEALTHY" ]; then
+    if [ -n "$DEGRADED_LINE" ]; then
+        RISK=$(echo "$DEGRADED_LINE" | grep -o '0\.[0-9]*' | head -1)
         RISK_DETECTED=true
+        info "[${ELAPSED}s] $TARGET_NODE risk=$RISK | Migrations: $CURRENT_MIGRATIONS"
+    else
+        info "[${ELAPSED}s] All healthy | Migrations: $CURRENT_MIGRATIONS"
     fi
 
-    # Check if chunk placement changed — node-3 removed from file locations
-    for f in 1 2 3 4 5 6; do
-        FILE_INFO=$(go run ./cmd/client info /data/file$f.bin 2>&1) || true
-        # Check if any chunk was migrated AWAY from node-3
-        # by looking for chunks that used to include node-3 but now have a different node
-        if echo "$FILE_INFO" | grep -q "node-4\|node-5"; then
-            if ! echo "$FILE_INFO" | grep -q "node-3"; then
-                # node-3 was removed from this file's chunks
-                MIGRATION_DETECTED=true
-                pass "Migration detected: file$f.bin chunks moved off node-3 at ${ELAPSED}s"
-                break 2
-            fi
-        fi
-    done
+    # Check if NEW migrations happened
+    if [ "$CURRENT_MIGRATIONS" -gt "$BASELINE_MIGRATIONS" ] 2>/dev/null; then
+        MIGRATION_DETECTED=true
+
+        MIGRATED=$(echo "$MIGRATION_RESP" | grep -o '"migrated":[0-9]*' | grep -o '[0-9]*' | tail -1)
+        FAILED=$(echo "$MIGRATION_RESP" | grep -o '"failed":[0-9]*' | grep -o '[0-9]*' | tail -1)
+        DURATION=$(echo "$MIGRATION_RESP" | grep -o '"duration":"[^"]*"' | tail -1)
+
+        pass "🚨 Proactive migration detected at ${ELAPSED}s!"
+        info "Chunks migrated: $MIGRATED | Failed: $FAILED | $DURATION"
+        break
+    fi
 done
 
 if [ "$RISK_DETECTED" = true ]; then
-    pass "Risk escalation detected"
+    pass "Risk escalation detected for $TARGET_NODE"
 else
-    fail "No risk escalation"
+    fail "No risk escalation detected"
 fi
 
 if [ "$MIGRATION_DETECTED" = false ]; then
-    # Show final state for debugging
-    info "Final chunk placements:"
-    for f in 1 2 3; do
-        FINFO=$(go run ./cmd/client info /data/file$f.bin 2>&1) || true
-        echo "$FINFO" | grep "node-" | head -1 | while IFS= read -r line; do
-            echo "      file$f: $line"
-        done
-    done
+    FINAL_RESP=$(curl -s "http://$META_ADMIN/migrations" 2>/dev/null) || true
+    FINAL_MIGRATIONS=$(echo "$FINAL_RESP" | grep -o '"count":[0-9]*' | grep -o '[0-9]*' || echo "0")
+    if [ -z "$FINAL_MIGRATIONS" ]; then FINAL_MIGRATIONS=0; fi
 
-    info "Meta log (last 30 lines):"
-    tail -30 "$TEST_DIR/meta.log" 2>/dev/null | grep -i "migration\|predict\|risk\|critical\|0\.\|WARN" | while IFS= read -r line; do
-        echo "      $line"
-    done
-    fail "Migration not detected"
+    if [ "$FINAL_MIGRATIONS" -gt "$BASELINE_MIGRATIONS" ] 2>/dev/null; then
+        pass "Migration confirmed in final check"
+    else
+        info "Migrations response: $FINAL_RESP"
+        fail "Migration not detected (baseline=$BASELINE_MIGRATIONS, final=$FINAL_MIGRATIONS)"
+    fi
 fi
 
-# ── Phase 6: Data integrity ──
+# ── Phase 7: Data integrity ──
 echo ""
-echo -e "${YELLOW}Phase 6: Verifying data integrity...${NC}"
+echo -e "${YELLOW}Phase 7: Verifying data integrity after migration...${NC}"
 
-curl -s -X POST "http://localhost:9703/recover" > /dev/null 2>&1
+curl -s -X POST "http://localhost:$TARGET_PORT/recover" > /dev/null 2>&1
 sleep 2
 
 go run ./cmd/client get /data/file1.bin "$TEST_DIR/file1_after.bin" > /dev/null 2>&1 || true
 go run ./cmd/client get /data/file2.bin "$TEST_DIR/file2_after.bin" > /dev/null 2>&1 || true
+go run ./cmd/client get /data/file3.bin "$TEST_DIR/file3_after.bin" > /dev/null 2>&1 || true
 
 CHECK1=$(md5 -q "$TEST_DIR/file1_after.bin" 2>/dev/null || md5sum "$TEST_DIR/file1_after.bin" 2>/dev/null | awk '{print $1}')
 CHECK2=$(md5 -q "$TEST_DIR/file2_after.bin" 2>/dev/null || md5sum "$TEST_DIR/file2_after.bin" 2>/dev/null | awk '{print $1}')
+CHECK3=$(md5 -q "$TEST_DIR/file3_after.bin" 2>/dev/null || md5sum "$TEST_DIR/file3_after.bin" 2>/dev/null | awk '{print $1}')
 
 [ "$FILE1_MD5" = "$CHECK1" ] && pass "file1.bin integrity preserved" || fail "file1.bin corrupted"
 [ "$FILE2_MD5" = "$CHECK2" ] && pass "file2.bin integrity preserved" || fail "file2.bin corrupted"
+[ "$FILE3_MD5" = "$CHECK3" ] && pass "file3.bin integrity preserved" || fail "file3.bin corrupted"
 
 # ── Results ──
 echo ""

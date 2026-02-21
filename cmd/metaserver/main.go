@@ -11,15 +11,15 @@ import (
 )
 
 func main() {
-	port := flag.Int("port", 9000, "metadata server port")
+	port := flag.Int("port", 9000, "metadata server gRPC port")
+	adminPort := flag.Int("admin-port", 9600, "admin HTTP port")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	srv := metaserver.NewServer(*port)
+	srv := metaserver.NewServer(*port, *adminPort)
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

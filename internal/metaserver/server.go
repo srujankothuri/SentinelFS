@@ -21,6 +21,7 @@ type Server struct {
 	chunkMgr   *ChunkManager
 	grpcServer *grpc.Server
 	port       int
+	adminPort  int
 
 	// Health subsystem
 	monitor   *health.Monitor
@@ -29,7 +30,7 @@ type Server struct {
 }
 
 // NewServer creates a new metadata server
-func NewServer(port int) *Server {
+func NewServer(port, adminPort int) *Server {
 	cm := NewChunkManager()
 	mon := health.NewMonitor()
 	pred := health.NewPredictor(mon)
@@ -40,6 +41,7 @@ func NewServer(port int) *Server {
 		namespace: NewNamespace(),
 		chunkMgr:  cm,
 		port:      port,
+		adminPort: adminPort,
 		monitor:   mon,
 		predictor: pred,
 		migrator:  mig,
@@ -60,7 +62,15 @@ func (s *Server) Start() error {
 	go s.deadNodeChecker()
 	go s.predictionLoop()
 
-	slog.Info("metadata server started", "port", s.port)
+	// Start admin HTTP server
+	admin := NewAdminServer(s, s.adminPort)
+	go func() {
+		if err := admin.Start(); err != nil {
+			slog.Error("metaserver admin failed", "error", err)
+		}
+	}()
+
+	slog.Info("metadata server started", "port", s.port, "admin_port", s.adminPort)
 	return s.grpcServer.Serve(lis)
 }
 
