@@ -15,19 +15,19 @@ func main() {
 	adminPort := flag.Int("admin-port", 9501, "admin HTTP port for chaos testing")
 	metaAddr := flag.String("meta-addr", "localhost:9000", "metadata server address")
 	dataDir := flag.String("data-dir", "./data/node1", "directory for chunk storage")
-	capacity := flag.Int64("capacity", 10*1024*1024*1024, "storage capacity in bytes") // 10GB default
+	capacity := flag.Int64("capacity", 10*1024*1024*1024, "storage capacity in bytes")
+	advertiseAddr := flag.String("address", "", "advertised address (default: localhost:<port>)")
 	flag.Parse()
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	slog.SetDefault(logger)
 
-	srv, err := datanode.NewServer(*port, *adminPort, *metaAddr, *dataDir, *capacity)
+	srv, err := datanode.NewServer(*port, *adminPort, *metaAddr, *dataDir, *capacity, *advertiseAddr)
 	if err != nil {
 		slog.Error("failed to create data node", "error", err)
 		os.Exit(1)
 	}
 
-	// Graceful shutdown
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)

@@ -30,10 +30,15 @@ type Server struct {
 }
 
 // NewServer creates a new data node server
-func NewServer(port int, adminPort int, metaAddr, dataDir string, capacity int64) (*Server, error) {
+func NewServer(port int, adminPort int, metaAddr, dataDir string, capacity int64, advertiseAddr string) (*Server, error) {
 	store, err := NewChunkStore(dataDir)
 	if err != nil {
 		return nil, fmt.Errorf("create chunk store: %w", err)
+	}
+
+	addr := advertiseAddr
+	if addr == "" {
+		addr = fmt.Sprintf("localhost:%d", port)
 	}
 
 	return &Server{
@@ -42,7 +47,7 @@ func NewServer(port int, adminPort int, metaAddr, dataDir string, capacity int64
 		port:      port,
 		adminPort: adminPort,
 		metaAddr:  metaAddr,
-		address:   fmt.Sprintf("localhost:%d", port),
+		address:   addr,
 		capacity:  capacity,
 	}, nil
 }

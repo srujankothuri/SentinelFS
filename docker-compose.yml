@@ -21,7 +21,7 @@ services:
       context: .
       dockerfile: Dockerfile.datanode
     container_name: sentinel-node-1
-    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--address", "datanode-1:9001", "--data-dir", "/data"]
     ports:
       - "9001:9001"
       - "9501:9501"
@@ -38,10 +38,10 @@ services:
       context: .
       dockerfile: Dockerfile.datanode
     container_name: sentinel-node-2
-    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    command: ["--port", "9002", "--admin-port", "9502", "--meta-addr", "metaserver:9000", "--address", "datanode-2:9002", "--data-dir", "/data"]
     ports:
-      - "9002:9001"
-      - "9502:9501"
+      - "9002:9002"
+      - "9502:9502"
     volumes:
       - node2-data:/data
     networks:
@@ -55,10 +55,10 @@ services:
       context: .
       dockerfile: Dockerfile.datanode
     container_name: sentinel-node-3
-    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    command: ["--port", "9003", "--admin-port", "9503", "--meta-addr", "metaserver:9000", "--address", "datanode-3:9003", "--data-dir", "/data"]
     ports:
-      - "9003:9001"
-      - "9503:9501"
+      - "9003:9003"
+      - "9503:9503"
     volumes:
       - node3-data:/data
     networks:
@@ -72,10 +72,10 @@ services:
       context: .
       dockerfile: Dockerfile.datanode
     container_name: sentinel-node-4
-    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    command: ["--port", "9004", "--admin-port", "9504", "--meta-addr", "metaserver:9000", "--address", "datanode-4:9004", "--data-dir", "/data"]
     ports:
-      - "9004:9001"
-      - "9504:9501"
+      - "9004:9004"
+      - "9504:9504"
     volumes:
       - node4-data:/data
     networks:
@@ -89,10 +89,10 @@ services:
       context: .
       dockerfile: Dockerfile.datanode
     container_name: sentinel-node-5
-    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    command: ["--port", "9005", "--admin-port", "9505", "--meta-addr", "metaserver:9000", "--address", "datanode-5:9005", "--data-dir", "/data"]
     ports:
-      - "9005:9001"
-      - "9505:9501"
+      - "9005:9005"
+      - "9505:9505"
     volumes:
       - node5-data:/data
     networks:
@@ -100,6 +100,26 @@ services:
     depends_on:
       metaserver:
         condition: service_healthy
+
+  # Client for testing inside Docker network
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+    container_name: sentinel-client
+    entrypoint: ["sh"]
+    stdin_open: true
+    tty: true
+    environment:
+      - SENTINEL_META_ADDR=metaserver:9000
+    networks:
+      - sentinel-net
+    depends_on:
+      - datanode-1
+      - datanode-2
+      - datanode-3
+      - datanode-4
+      - datanode-5
 
 volumes:
   node1-data:
