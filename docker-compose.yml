@@ -1,0 +1,113 @@
+version: "3.8"
+
+services:
+  metaserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.metaserver
+    container_name: sentinel-meta
+    ports:
+      - "9000:9000"
+    networks:
+      - sentinel-net
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9000"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  datanode-1:
+    build:
+      context: .
+      dockerfile: Dockerfile.datanode
+    container_name: sentinel-node-1
+    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    ports:
+      - "9001:9001"
+      - "9501:9501"
+    volumes:
+      - node1-data:/data
+    networks:
+      - sentinel-net
+    depends_on:
+      metaserver:
+        condition: service_healthy
+
+  datanode-2:
+    build:
+      context: .
+      dockerfile: Dockerfile.datanode
+    container_name: sentinel-node-2
+    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    ports:
+      - "9002:9001"
+      - "9502:9501"
+    volumes:
+      - node2-data:/data
+    networks:
+      - sentinel-net
+    depends_on:
+      metaserver:
+        condition: service_healthy
+
+  datanode-3:
+    build:
+      context: .
+      dockerfile: Dockerfile.datanode
+    container_name: sentinel-node-3
+    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    ports:
+      - "9003:9001"
+      - "9503:9501"
+    volumes:
+      - node3-data:/data
+    networks:
+      - sentinel-net
+    depends_on:
+      metaserver:
+        condition: service_healthy
+
+  datanode-4:
+    build:
+      context: .
+      dockerfile: Dockerfile.datanode
+    container_name: sentinel-node-4
+    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    ports:
+      - "9004:9001"
+      - "9504:9501"
+    volumes:
+      - node4-data:/data
+    networks:
+      - sentinel-net
+    depends_on:
+      metaserver:
+        condition: service_healthy
+
+  datanode-5:
+    build:
+      context: .
+      dockerfile: Dockerfile.datanode
+    container_name: sentinel-node-5
+    command: ["--port", "9001", "--admin-port", "9501", "--meta-addr", "metaserver:9000", "--data-dir", "/data"]
+    ports:
+      - "9005:9001"
+      - "9505:9501"
+    volumes:
+      - node5-data:/data
+    networks:
+      - sentinel-net
+    depends_on:
+      metaserver:
+        condition: service_healthy
+
+volumes:
+  node1-data:
+  node2-data:
+  node3-data:
+  node4-data:
+  node5-data:
+
+networks:
+  sentinel-net:
+    driver: bridge
