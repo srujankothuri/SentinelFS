@@ -1,5 +1,7 @@
 # SentinelFS 🛡️
 
+[![CI](https://github.com/srujankothuri/SentinelFS/actions/workflows/ci.yml/badge.svg)](https://github.com/srujankothuri/SentinelFS/actions/workflows/ci.yml)
+
 **A Predictive Self-Healing Distributed File System built in Go**
 
 SentinelFS goes beyond traditional reactive fault tolerance. It continuously monitors data node health metrics, applies **statistical trend analysis with linear regression** to predict node failures *before* they happen, and **proactively migrates data** to healthy nodes — achieving zero data loss without waiting for a crash.
