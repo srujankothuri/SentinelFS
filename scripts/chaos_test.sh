@@ -63,12 +63,20 @@ sleep 1
 
 go run ./cmd/datanode --meta-addr localhost:9200 --port 9203 --admin-port 9703 --data-dir ./data/chaos-node-3 > "$TEST_DIR/node3.log" 2>&1 &
 PIDS+=($!)
+sleep 1
+
+go run ./cmd/datanode --meta-addr localhost:9200 --port 9204 --admin-port 9704 --data-dir ./data/chaos-node-4 > "$TEST_DIR/node4.log" 2>&1 &
+PIDS+=($!)
+sleep 1
+
+go run ./cmd/datanode --meta-addr localhost:9200 --port 9205 --admin-port 9705 --data-dir ./data/chaos-node-5 > "$TEST_DIR/node5.log" 2>&1 &
+PIDS+=($!)
 sleep 2
 
 # Verify cluster
 OUTPUT=$(go run ./cmd/client cluster 2>&1) || true
-if echo "$OUTPUT" | grep -q "3 total"; then
-    pass "Cluster started with 3 nodes"
+if echo "$OUTPUT" | grep -q "5 total"; then
+    pass "Cluster started with 5 nodes"
 else
     fail "Cluster startup"
     exit 1
