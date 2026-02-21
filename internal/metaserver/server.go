@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/srujankothuri/SentinelFS/internal/common"
+	"github.com/srujankothuri/SentinelFS/internal/health"
 	pb "github.com/srujankothuri/SentinelFS/proto"
 
 	"google.golang.org/grpc"
@@ -16,18 +17,32 @@ import (
 // Server is the metadata gRPC server
 type Server struct {
 	pb.UnimplementedMetadataServiceServer
-	namespace    *Namespace
-	chunkMgr     *ChunkManager
-	grpcServer   *grpc.Server
-	port         int
+	namespace  *Namespace
+	chunkMgr   *ChunkManager
+	grpcServer *grpc.Server
+	port       int
+
+	// Health subsystem
+	monitor   *health.Monitor
+	predictor *health.Predictor
+	migrator  *health.Migrator
 }
 
 // NewServer creates a new metadata server
 func NewServer(port int) *Server {
+	cm := NewChunkManager()
+	mon := health.NewMonitor()
+	pred := health.NewPredictor(mon)
+	adapter := health.NewChunkManagerAdapter(cm)
+	mig := health.NewMigrator(adapter)
+
 	return &Server{
 		namespace: NewNamespace(),
-		chunkMgr:  NewChunkManager(),
+		chunkMgr:  cm,
 		port:      port,
+		monitor:   mon,
+		predictor: pred,
+		migrator:  mig,
 	}
 }
 
@@ -41,8 +56,9 @@ func (s *Server) Start() error {
 	s.grpcServer = grpc.NewServer()
 	pb.RegisterMetadataServiceServer(s.grpcServer, s)
 
-	// Background: check for dead nodes
+	// Background routines
 	go s.deadNodeChecker()
+	go s.predictionLoop()
 
 	slog.Info("metadata server started", "port", s.port)
 	return s.grpcServer.Serve(lis)
@@ -55,12 +71,12 @@ func (s *Server) Stop() {
 	}
 }
 
-// GetChunkManager exposes chunk manager for health monitor integration
+// GetChunkManager exposes chunk manager
 func (s *Server) GetChunkManager() *ChunkManager {
 	return s.chunkMgr
 }
 
-// GetNamespace exposes namespace for health monitor integration
+// GetNamespace exposes namespace
 func (s *Server) GetNamespace() *Namespace {
 	return s.namespace
 }
@@ -72,19 +88,16 @@ func (s *Server) GetNamespace() *Namespace {
 func (s *Server) PutFile(ctx context.Context, req *pb.PutFileRequest) (*pb.PutFileResponse, error) {
 	slog.Info("PutFile request", "path", req.Path, "size", req.FileSize, "chunks", req.ChunkCount)
 
-	// Allocate chunks across nodes
 	placements, err := s.chunkMgr.AllocateChunks(req.Path, int(req.ChunkCount), req.FileSize)
 	if err != nil {
 		return &pb.PutFileResponse{Success: false, Message: err.Error()}, nil
 	}
 
-	// Build chunk IDs list
 	chunkIDs := make([]string, len(placements))
 	for i, p := range placements {
 		chunkIDs[i] = p.ChunkID
 	}
 
-	// Register file in namespace
 	meta := &FileMeta{
 		Path:              req.Path,
 		Size:              req.FileSize,
@@ -99,7 +112,6 @@ func (s *Server) PutFile(ctx context.Context, req *pb.PutFileRequest) (*pb.PutFi
 		return &pb.PutFileResponse{Success: false, Message: err.Error()}, nil
 	}
 
-	// Convert to proto placements
 	pbPlacements := make([]*pb.ChunkPlacement, len(placements))
 	for i, p := range placements {
 		pbPlacements[i] = &pb.ChunkPlacement{
@@ -131,7 +143,6 @@ func (s *Server) GetFile(ctx context.Context, req *pb.GetFileRequest) (*pb.GetFi
 		return &pb.GetFileResponse{Success: false, Message: err.Error()}, nil
 	}
 
-	// Build proto response
 	chunkInfos := make([]*pb.ChunkInfo, len(meta.ChunkIDs))
 	chunkLocs := make([]*pb.ChunkLocation, len(locs))
 
@@ -174,7 +185,6 @@ func (s *Server) DeleteFile(ctx context.Context, req *pb.DeleteFileRequest) (*pb
 		return &pb.DeleteFileResponse{Success: false, Message: err.Error()}, nil
 	}
 
-	// Remove chunk metadata
 	s.chunkMgr.RemoveChunks(meta.ChunkIDs)
 
 	slog.Info("file deleted", "path", req.Path, "chunks_removed", len(meta.ChunkIDs))
@@ -278,13 +288,26 @@ func (s *Server) ReportHealth(ctx context.Context, req *pb.ReportHealthRequest) 
 		return &pb.ReportHealthResponse{Success: false, Status: "no metrics"}, nil
 	}
 
-	node, ok := s.chunkMgr.GetNode(req.Metrics.NodeId)
+	m := req.Metrics
+
+	// Ingest into health monitor
+	s.monitor.IngestReport(&health.HealthReport{
+		NodeID:        m.NodeId,
+		DiskIOLatency: m.DiskIoLatencyMs,
+		DiskUtil:      m.DiskUtilization,
+		ErrorCount:    m.ErrorCount,
+		ResponseTime:  m.ResponseTimeMs,
+		CPUUsage:      m.CpuUsage,
+		MemoryUsage:   m.MemoryUsage,
+		Timestamp:     time.UnixMilli(m.Timestamp),
+	})
+
+	// Get current status for this node
+	node, ok := s.chunkMgr.GetNode(m.NodeId)
 	if !ok {
 		return &pb.ReportHealthResponse{Success: false, Status: "unknown node"}, nil
 	}
 
-	// Health monitor will process these metrics (wired in commit #14)
-	// For now, just acknowledge
 	return &pb.ReportHealthResponse{
 		Success: true,
 		Status:  string(node.Status),
@@ -368,6 +391,46 @@ func (s *Server) deadNodeChecker() {
 		deadIDs := s.chunkMgr.CheckDeadNodes()
 		for _, id := range deadIDs {
 			slog.Warn("detected dead node", "node_id", id)
+		}
+	}
+}
+
+// predictionLoop periodically runs the prediction engine and triggers migrations
+func (s *Server) predictionLoop() {
+	// Wait for nodes to register and accumulate metrics
+	time.Sleep(15 * time.Second)
+
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		results := s.predictor.PredictAll()
+
+		for _, result := range results {
+			// Update node status in chunk manager
+			s.chunkMgr.UpdateNodeHealth(result.NodeID, result.Status, result.OverallRisk)
+
+			// Trigger migration if critical
+			if result.Status == common.StatusCritical {
+				slog.Warn("🔴 NODE CRITICAL — triggering proactive migration",
+					"node_id", result.NodeID,
+					"risk", fmt.Sprintf("%.2f", result.OverallRisk),
+					"reasons", result.Reasons,
+				)
+
+				go func(r *health.PredictionResult) {
+					report := s.migrator.MigrateNode(r)
+					if report != nil {
+						slog.Info("migration report",
+							"node_id", report.NodeID,
+							"total", report.TotalChunks,
+							"migrated", report.MigratedChunks,
+							"failed", report.FailedChunks,
+							"duration", report.CompletedAt.Sub(report.StartedAt),
+						)
+					}
+				}(result)
+			}
 		}
 	}
 }
