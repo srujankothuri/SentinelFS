@@ -8,7 +8,7 @@ bin/
 
 # Go
 vendor/
-go.sum
+
 
 # Build output
 build/
@@ -34,5 +34,3 @@ docker-data/
 # Logs
 *.log
 
-# Generated protobuf
-proto/*.pb.go
